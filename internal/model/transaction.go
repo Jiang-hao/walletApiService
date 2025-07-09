@@ -7,8 +7,10 @@ import (
 
 type Transaction struct {
 	ID            uuid.UUID       `db:"id"`
+	UserID        uuid.UUID       `db:"user_id"`
 	WalletID      uuid.UUID       `db:"wallet_id"`
 	Amount        decimal.Decimal `db:"amount"`
+	Currency      string          `db:"currency"`
 	BalanceBefore decimal.Decimal `db:"balance_before"`
 	BalanceAfter  decimal.Decimal `db:"balance_after"`
 	Type          string          `db:"type"`
@@ -18,22 +20,22 @@ type Transaction struct {
 }
 
 type DepositRequest struct {
-	Amount    decimal.Decimal `json:"amount" binding:"required,gt=0"`
+	Amount    decimal.Decimal `json:"amount"`
 	Currency  string          `json:"currency" binding:"required,len=3"`
 	Reference string          `json:"reference"`
 }
 
 type WithdrawalRequest struct {
-	Amount    decimal.Decimal `json:"amount" binding:"required,gt=0"`
+	Amount    decimal.Decimal `json:"amount"`
 	Currency  string          `json:"currency" binding:"required,len=3"`
 	Reference string          `json:"reference"`
 }
 
 type TransferRequest struct {
-	ToWalletID uuid.UUID       `json:"to_wallet_id" binding:"required"`
-	Amount     decimal.Decimal `json:"amount" binding:"required,gt=0"`
-	Currency   string          `json:"currency" binding:"required,len=3"`
-	Reference  string          `json:"reference"`
+	ToUserId  uuid.UUID       `json:"to_user_id" binding:"required"`
+	Amount    decimal.Decimal `json:"amount"`
+	Currency  string          `json:"currency" binding:"required,len=3"`
+	Reference string          `json:"reference"`
 }
 
 type BalanceResponse struct {
@@ -46,6 +48,7 @@ type TransactionResponse struct {
 	Amount        decimal.Decimal `json:"amount"`
 	BalanceBefore decimal.Decimal `json:"balance_before"`
 	BalanceAfter  decimal.Decimal `json:"balance_after"`
+	Currency      string          `jon:"currency"`
 	Type          string          `json:"type"`
 	Reference     string          `json:"reference"`
 	CreatedAt     string          `json:"created_at"`

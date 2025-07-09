@@ -3,9 +3,9 @@ package repository
 import (
 	"context"
 	"database/sql"
-	"fmt"
 	"github.com/shopspring/decimal"
 
+	"github.com/Jiang-hao/walletApiService/internal/errors"
 	"github.com/Jiang-hao/walletApiService/internal/model"
 	"github.com/google/uuid"
 	"github.com/jmoiron/sqlx"
@@ -29,59 +29,78 @@ func NewWalletRepository(db *sqlx.DB) WalletRepository {
 }
 
 func (r *walletRepo) CreateWallet(ctx context.Context, wallet *model.Wallet) error {
+	const op = "wallet.Create"
+
 	query := `INSERT INTO wallets (id, user_id, currency, balance) 
-	          VALUES (:id, :user_id, :currency, :balance)`
-	_, err := r.db.NamedExecContext(ctx, query, wallet)
-	return err
+              VALUES (:id, :user_id, :currency, :balance)`
+
+	if _, err := r.db.NamedExecContext(ctx, query, wallet); err != nil {
+		return errors.NewInsufficientBalance(op)
+	}
+	return nil
 }
 
 func (r *walletRepo) GetWallet(ctx context.Context, id uuid.UUID) (*model.Wallet, error) {
+	const op = "wallet.GetByID"
 	var wallet model.Wallet
-	query := `SELECT * FROM wallets WHERE id = $1`
-	err := r.db.GetContext(ctx, &wallet, query, id)
+
+	err := r.db.GetContext(ctx, &wallet, `SELECT * FROM wallets WHERE id = $1`, id)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("wallet not found")
+			return nil, errors.NewNotFound(op, "wallet")
 		}
-		return nil, fmt.Errorf("failed to get wallet: %w", err)
+		return nil, errors.NewInternal(op, err)
 	}
 	return &wallet, nil
 }
 
 func (r *walletRepo) GetWalletByUserAndCurrency(ctx context.Context, userID uuid.UUID, currency string) (*model.Wallet, error) {
+	const op = "wallet.GetByUserAndCurrency"
 	var wallet model.Wallet
-	query := `SELECT * FROM wallets WHERE user_id = $1 AND currency = $2`
-	err := r.db.GetContext(ctx, &wallet, query, userID, currency)
+
+	err := r.db.GetContext(ctx, &wallet,
+		`SELECT * FROM wallets WHERE user_id = $1 AND currency = $2`,
+		userID, currency)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("wallet not found")
+			return nil, errors.NewNotFound(op, "wallet")
 		}
-		return nil, fmt.Errorf("failed to get wallet: %w", err)
+		return nil, errors.NewInternal(op, err)
 	}
 	return &wallet, nil
 }
 
 func (r *walletRepo) GetWalletForUpdate(ctx context.Context, id uuid.UUID) (*model.Wallet, error) {
+	const op = "wallet.GetForUpdate"
 	var wallet model.Wallet
-	query := `SELECT * FROM wallets WHERE id = $1 FOR UPDATE`
-	err := r.db.GetContext(ctx, &wallet, query, id)
+
+	err := r.db.GetContext(ctx, &wallet,
+		`SELECT * FROM wallets WHERE id = $1 FOR UPDATE`, id)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("wallet not found")
+			return nil, errors.NewNotFound(op, "wallet")
 		}
-		return nil, fmt.Errorf("failed to get wallet for update: %w", err)
+		return nil, errors.NewInternal(op, err)
 	}
 	return &wallet, nil
 }
 
 func (r *walletRepo) UpdateWalletBalance(ctx context.Context, id uuid.UUID, newBalance decimal.Decimal, version int) (int64, error) {
-	query := `UPDATE wallets SET balance = $1, version = version + 1, updated_at = NOW() 
-	          WHERE id = $2 AND version = $3`
-	result, err := r.db.ExecContext(ctx, query, newBalance, id, version)
+	const op = "wallet.UpdateBalance"
+
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE wallets SET balance = $1, version = version + 1 
+         WHERE id = $2 AND version = $3`,
+		newBalance, id, version)
 	if err != nil {
-		return 0, fmt.Errorf("failed to update wallet balance: %w", err)
+		return 0, errors.NewInternal(op, err)
 	}
-	return result.RowsAffected()
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, errors.NewInternal(op, err)
+	}
+	return rows, nil
 }
 
 type TxWalletRepository interface {
@@ -89,7 +108,12 @@ type TxWalletRepository interface {
 }
 
 func (r *walletRepo) UpdateWalletBalanceTx(ctx context.Context, tx *sqlx.Tx, id uuid.UUID, newBalance decimal.Decimal) error {
-	query := `UPDATE wallets SET balance = $1, updated_at = NOW() WHERE id = $2`
-	_, err := tx.ExecContext(ctx, query, newBalance, id)
-	return err
+	const op = "wallet.UpdateBalanceTx"
+
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE wallets SET balance = $1 WHERE id = $2`,
+		newBalance, id); err != nil {
+		return errors.NewInternal(op, err)
+	}
+	return nil
 }

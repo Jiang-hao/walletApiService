@@ -2,28 +2,27 @@ package service
 
 import (
 	"context"
-	"errors"
-	"fmt"
-	"github.com/shopspring/decimal"
-	"time"
 
+	"github.com/Jiang-hao/walletApiService/internal/errors"
 	"github.com/Jiang-hao/walletApiService/internal/model"
 	"github.com/Jiang-hao/walletApiService/internal/repository"
+	"github.com/Jiang-hao/walletApiService/internal/util"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
+	"log"
+	"time"
 )
 
 type WalletService interface {
 	Deposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency, reference string) (*model.WalletResponse, error)
 	Withdraw(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency, reference string) (*model.WalletResponse, error)
-	Transfer(ctx context.Context, fromUserID, toWalletID uuid.UUID, amount decimal.Decimal, currency, reference string) (*model.WalletResponse, error)
+	Transfer(ctx context.Context, fromUserID, toUserID uuid.UUID, amount decimal.Decimal, currency, reference string) (*model.WalletResponse, error)
 	GetBalance(ctx context.Context, userID uuid.UUID, currency string) (decimal.Decimal, error)
 	GetTransactionHistory(ctx context.Context, userID uuid.UUID, currency string, page, pageSize int) ([]model.Transaction, error)
 }
 
 type walletService struct {
-	walletRepo      repository.WalletRepository
-	transactionRepo repository.TransactionRepository
-	txManager       repository.TxManager
+	utils *util.WalletUtil
 }
 
 func NewWalletService(
@@ -32,213 +31,107 @@ func NewWalletService(
 	txManager repository.TxManager,
 ) WalletService {
 	return &walletService{
-		walletRepo:      walletRepo,
-		transactionRepo: transactionRepo,
-		txManager:       txManager,
+		utils: util.NewWalletUtil(walletRepo, transactionRepo, txManager),
 	}
-}
-
-func (s *walletService) getOrCreateWallet(ctx context.Context, userID uuid.UUID, currency string) (*model.Wallet, error) {
-	wallet, err := s.walletRepo.GetWalletByUserAndCurrency(ctx, userID, currency)
-	if err == nil {
-		return wallet, nil
-	}
-
-	if err.Error() == "wallet not found" {
-		newWallet := &model.Wallet{
-			ID:       uuid.New(),
-			UserID:   userID,
-			Currency: currency,
-			Balance:  decimal.Zero,
-		}
-		err = s.walletRepo.CreateWallet(ctx, newWallet)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create wallet: %w", err)
-		}
-		return newWallet, nil
-	}
-
-	return nil, fmt.Errorf("failed to get wallet: %w", err)
 }
 
 func (s *walletService) Deposit(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency, reference string) (*model.WalletResponse, error) {
+	const op = "service.Deposit"
+	start := time.Now()
+	defer func() {
+		log.Printf("[%s] completed in %v", op, time.Since(start))
+	}()
+
 	if amount.LessThanOrEqual(decimal.Zero) {
-		return nil, errors.New("amount must be positive")
+		return nil, errors.NewInvalidInput(op, "amount", amount)
 	}
 
-	for i := 0; i < 3; i++ {
-		wallet, err := s.getOrCreateWallet(ctx, userID, currency)
-		if err != nil {
-			return nil, fmt.Errorf("get wallet failed: %w", err)
-		}
-
-		newBalance := wallet.Balance.Add(amount)
-		rowsAffected, err := s.walletRepo.UpdateWalletBalance(
-			ctx,
-			wallet.ID,
-			newBalance,
-			wallet.Version,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("update balance failed: %w", err)
-		}
-
-		if rowsAffected == 1 {
-			tx := model.Transaction{
-				ID:            uuid.New(),
-				WalletID:      wallet.ID,
-				Amount:        amount,
-				BalanceBefore: wallet.Balance,
-				BalanceAfter:  newBalance,
-				Type:          "deposit",
-				Reference:     reference,
-			}
-			if err := s.transactionRepo.CreateTransaction(ctx, &tx); err != nil {
-				return nil, fmt.Errorf("create transaction failed: %w", err)
-			}
-
-			return &model.WalletResponse{
-				ID:       wallet.ID,
-				UserID:   wallet.UserID,
-				Balance:  newBalance,
-				Currency: wallet.Currency,
-			}, nil
-		}
-
-		time.Sleep(100 * time.Millisecond)
+	wallet, err := s.utils.GetOrCreateWallet(ctx, userID, currency)
+	if err != nil {
+		return nil, errors.WrapInternal(op, err)
 	}
 
-	return nil, errors.New("operation conflicted after retries")
+	return s.utils.UpdateBalanceWithRetry(ctx, wallet, amount, reference, "deposit", 3)
 }
 
 func (s *walletService) Withdraw(ctx context.Context, userID uuid.UUID, amount decimal.Decimal, currency, reference string) (*model.WalletResponse, error) {
+	const op = "service.Withdraw"
+	start := time.Now()
+	defer func() {
+		log.Printf("[%s] completed in %v", op, time.Since(start))
+	}()
+
 	if amount.LessThanOrEqual(decimal.Zero) {
-		return nil, errors.New("amount must be positive")
+		return nil, errors.NewInvalidInput(op, "amount", amount)
 	}
 
-	for i := 0; i < 3; i++ {
-		wallet, err := s.getOrCreateWallet(ctx, userID, currency)
-		if err != nil {
-			return nil, fmt.Errorf("get wallet failed: %w", err)
-		}
-
-		newBalance := wallet.Balance.Sub(amount)
-		if newBalance.LessThan(decimal.Zero) {
-			return nil, errors.New("insufficient balance")
-		}
-
-		rowsAffected, err := s.walletRepo.UpdateWalletBalance(
-			ctx,
-			wallet.ID,
-			newBalance,
-			wallet.Version,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("update balance failed: %w", err)
-		}
-
-		if rowsAffected == 1 {
-			tx := model.Transaction{
-				ID:            uuid.New(),
-				WalletID:      wallet.ID,
-				Amount:        amount.Neg(),
-				BalanceBefore: wallet.Balance,
-				BalanceAfter:  newBalance,
-				Type:          "withdrawal",
-				Reference:     reference,
-			}
-			if err := s.transactionRepo.CreateTransaction(ctx, &tx); err != nil {
-				return nil, fmt.Errorf("create transaction failed: %w", err)
-			}
-
-			return &model.WalletResponse{
-				ID:       wallet.ID,
-				UserID:   wallet.UserID,
-				Balance:  newBalance,
-				Currency: wallet.Currency,
-			}, nil
-		}
-
-		time.Sleep(100 * time.Millisecond)
+	wallet, err := s.utils.GetOrCreateWallet(ctx, userID, currency)
+	if err != nil {
+		return nil, errors.WrapInternal(op, err)
 	}
 
-	return nil, errors.New("operation conflicted after retries")
+	return s.utils.UpdateBalanceWithRetry(ctx, wallet, amount.Neg(), reference, "withdrawal", 3)
 }
 
 func (s *walletService) Transfer(
 	ctx context.Context,
-	fromUserID, toWalletID uuid.UUID,
+	fromUserID, toUserID uuid.UUID,
 	amount decimal.Decimal,
 	currency, reference string,
 ) (*model.WalletResponse, error) {
+	const op = "service.Transfer"
+	start := time.Now()
+	defer func() {
+		log.Printf("[%s] completed in %v", op, time.Since(start))
+	}()
+
 	if amount.LessThanOrEqual(decimal.Zero) {
-		return nil, errors.New("amount must be positive")
+		return nil, errors.NewInvalidInput(op, "amount", amount)
 	}
 
-	tx, err := s.txManager.BeginTx(ctx)
+	tx, err := s.utils.TxManager.BeginTx(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin transaction failed: %w", err)
+		return nil, errors.WrapInternal(op, err)
 	}
-	defer tx.Rollback()
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		}
+	}()
 
-	fromWallet, err := s.getOrCreateWallet(ctx, fromUserID, currency)
+	fromWallet, err := s.utils.GetOrCreateWallet(ctx, fromUserID, currency)
 	if err != nil {
-		return nil, fmt.Errorf("get from wallet failed: %w", err)
+		return nil, errors.WrapInternal(op, err)
 	}
 
-	toWallet, err := tx.GetWalletForUpdate(ctx, toWalletID)
+	toWallet, err := s.utils.GetOrCreateWallet(ctx, toUserID, currency)
 	if err != nil {
-		return nil, fmt.Errorf("get to wallet failed: %w", err)
+		return nil, errors.WrapInternal(op, err)
 	}
 
-	if fromWallet.Currency != toWallet.Currency {
-		return nil, errors.New("currency mismatch")
+	if err := s.utils.ValidateTransfer(fromWallet, toWallet, amount); err != nil {
+		return nil, err
 	}
 
-	if fromWallet.Balance.LessThan(amount) {
-		return nil, errors.New("insufficient balance")
-	}
-
+	// update FROM wallet
 	newFromBalance := fromWallet.Balance.Sub(amount)
 	if err := tx.UpdateWalletBalanceTx(ctx, fromWallet.ID, newFromBalance); err != nil {
-		return nil, fmt.Errorf("update from wallet failed: %w", err)
+		return nil, errors.WrapInternal(op, err)
 	}
 
+	// update TO wallet
 	newToBalance := toWallet.Balance.Add(amount)
 	if err := tx.UpdateWalletBalanceTx(ctx, toWallet.ID, newToBalance); err != nil {
-		return nil, fmt.Errorf("update to wallet failed: %w", err)
+		return nil, errors.WrapInternal(op, err)
 	}
 
-	txID := uuid.New()
-	fromTx := model.Transaction{
-		ID:            txID,
-		WalletID:      fromWallet.ID,
-		Amount:        amount.Neg(),
-		BalanceBefore: fromWallet.Balance,
-		BalanceAfter:  newFromBalance,
-		Type:          "transfer",
-		Reference:     reference,
-	}
-	if err := tx.CreateTransactionTx(ctx, &fromTx); err != nil {
-		return nil, fmt.Errorf("create from transaction failed: %w", err)
-	}
-
-	toTx := model.Transaction{
-		ID:            uuid.New(),
-		WalletID:      toWallet.ID,
-		Amount:        amount,
-		BalanceBefore: toWallet.Balance,
-		BalanceAfter:  newToBalance,
-		Type:          "transfer",
-		RelatedTxID:   &txID,
-		Reference:     reference,
-	}
-	if err := tx.CreateTransactionTx(ctx, &toTx); err != nil {
-		return nil, fmt.Errorf("create to transaction failed: %w", err)
+	// update FROM - TO transaction (2 directions)
+	if err := s.utils.CreateTransferTransactions(ctx, tx, fromWallet, toWallet, amount, reference); err != nil {
+		return nil, errors.WrapInternal(op, err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit transaction failed: %w", err)
+		return nil, errors.WrapInternal(op, err)
 	}
 
 	return &model.WalletResponse{
@@ -250,9 +143,11 @@ func (s *walletService) Transfer(
 }
 
 func (s *walletService) GetBalance(ctx context.Context, userID uuid.UUID, currency string) (decimal.Decimal, error) {
-	wallet, err := s.getOrCreateWallet(ctx, userID, currency)
+	const op = "service.GetBalance"
+
+	wallet, err := s.utils.GetOrCreateWallet(ctx, userID, currency)
 	if err != nil {
-		return decimal.Zero, fmt.Errorf("get wallet failed: %w", err)
+		return decimal.Zero, errors.WrapInternal(op, err)
 	}
 	return wallet.Balance, nil
 }
@@ -263,15 +158,24 @@ func (s *walletService) GetTransactionHistory(
 	currency string,
 	page, pageSize int,
 ) ([]model.Transaction, error) {
-	wallet, err := s.getOrCreateWallet(ctx, userID, currency)
-	if err != nil {
-		return nil, fmt.Errorf("get wallet failed: %w", err)
+	const op = "service.GetTransactionHistory"
+
+	if page < 1 {
+		return nil, errors.NewInvalidInput(op, "page", page)
+	}
+	if pageSize < 1 || pageSize > 100 {
+		return nil, errors.NewInvalidInput(op, "pageSize", pageSize)
+	}
+	offset := (page - 1) * pageSize
+
+	if currency == "" {
+		return s.utils.GetAllTransactions(ctx, userID, offset, pageSize)
+	} else {
+		wallet, err := s.utils.GetOrCreateWallet(ctx, userID, currency)
+		if err != nil {
+			return nil, errors.WrapInternal(op, err)
+		}
+		return s.utils.GetTransactions(ctx, wallet.ID, offset, pageSize)
 	}
 
-	offset := (page - 1) * pageSize
-	transactions, err := s.transactionRepo.GetTransactions(ctx, wallet.ID, offset, pageSize)
-	if err != nil {
-		return nil, fmt.Errorf("get transactions failed: %w", err)
-	}
-	return transactions, nil
 }

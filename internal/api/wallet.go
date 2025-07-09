@@ -6,6 +6,7 @@ import (
 	"github.com/Jiang-hao/walletApiService/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"net/http"
 	"strconv"
 )
@@ -19,7 +20,7 @@ func NewWalletHandler(walletService service.WalletService) *WalletHandler {
 }
 
 func (h *WalletHandler) Deposit(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("user_id"))
+	userID, err := uuid.Parse(c.Query("user_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
 		return
@@ -28,6 +29,11 @@ func (h *WalletHandler) Deposit(c *gin.Context) {
 	var req model.DepositRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Amount.LessThanOrEqual(decimal.Zero) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be positive"})
 		return
 	}
 
@@ -41,7 +47,7 @@ func (h *WalletHandler) Deposit(c *gin.Context) {
 }
 
 func (h *WalletHandler) Withdraw(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("user_id"))
+	userID, err := uuid.Parse(c.Query("user_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
 		return
@@ -50,6 +56,11 @@ func (h *WalletHandler) Withdraw(c *gin.Context) {
 	var req model.WithdrawalRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if req.Amount.LessThanOrEqual(decimal.Zero) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be positive"})
 		return
 	}
 
@@ -63,7 +74,7 @@ func (h *WalletHandler) Withdraw(c *gin.Context) {
 }
 
 func (h *WalletHandler) Transfer(c *gin.Context) {
-	fromUserID, err := uuid.Parse(c.Param("user_id"))
+	fromUserID, err := uuid.Parse(c.Query("user_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
 		return
@@ -75,7 +86,12 @@ func (h *WalletHandler) Transfer(c *gin.Context) {
 		return
 	}
 
-	wallet, err := h.walletService.Transfer(c.Request.Context(), fromUserID, req.ToWalletID, req.Amount, req.Currency, req.Reference)
+	if req.Amount.LessThanOrEqual(decimal.Zero) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "amount must be positive"})
+		return
+	}
+
+	wallet, err := h.walletService.Transfer(c.Request.Context(), fromUserID, req.ToUserId, req.Amount, req.Currency, req.Reference)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -85,7 +101,7 @@ func (h *WalletHandler) Transfer(c *gin.Context) {
 }
 
 func (h *WalletHandler) GetBalance(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("user_id"))
+	userID, err := uuid.Parse(c.Query("user_id"))
 	if err != nil {
 		fmt.Errorf("user id null: %w", err)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
@@ -110,16 +126,13 @@ func (h *WalletHandler) GetBalance(c *gin.Context) {
 }
 
 func (h *WalletHandler) GetTransactionHistory(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("user_id"))
+	userID, err := uuid.Parse(c.Query("user_id"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user ID"})
 		return
 	}
 
 	currency := c.Query("currency")
-	if currency == "" {
-		currency = "USD"
-	}
 
 	page, err := strconv.Atoi(c.DefaultQuery("page", "1"))
 	if err != nil || page < 1 {
