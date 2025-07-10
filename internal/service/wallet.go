@@ -98,39 +98,39 @@ func (s *walletService) Transfer(
 			tx.Rollback()
 		}
 	}()
-
-	fromWallet, err := s.utils.GetOrCreateWallet(ctx, fromUserID, currency)
+	var fromWallet, toWallet *model.Wallet
+	fromWallet, err = s.utils.GetOrCreateWallet(ctx, fromUserID, currency)
 	if err != nil {
 		return nil, errors.WrapInternal(op, err)
 	}
 
-	toWallet, err := s.utils.GetOrCreateWallet(ctx, toUserID, currency)
+	toWallet, err = s.utils.GetOrCreateWallet(ctx, toUserID, currency)
 	if err != nil {
 		return nil, errors.WrapInternal(op, err)
 	}
 
-	if err := s.utils.ValidateTransfer(fromWallet, toWallet, amount); err != nil {
+	if err = s.utils.ValidateTransfer(fromWallet, toWallet, amount); err != nil {
 		return nil, err
 	}
 
 	// update FROM wallet
 	newFromBalance := fromWallet.Balance.Sub(amount)
-	if err := tx.UpdateWalletBalanceTx(ctx, fromWallet.ID, newFromBalance); err != nil {
+	if err = tx.UpdateWalletBalanceTx(ctx, fromWallet.ID, newFromBalance); err != nil {
 		return nil, errors.WrapInternal(op, err)
 	}
 
 	// update TO wallet
 	newToBalance := toWallet.Balance.Add(amount)
-	if err := tx.UpdateWalletBalanceTx(ctx, toWallet.ID, newToBalance); err != nil {
+	if err = tx.UpdateWalletBalanceTx(ctx, toWallet.ID, newToBalance); err != nil {
 		return nil, errors.WrapInternal(op, err)
 	}
 
 	// update FROM - TO transaction (2 directions)
-	if err := s.utils.CreateTransferTransactions(ctx, tx, fromWallet, toWallet, amount, reference); err != nil {
+	if err = s.utils.CreateTransferTransactions(ctx, tx, fromWallet, toWallet, amount, reference); err != nil {
 		return nil, errors.WrapInternal(op, err)
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err = tx.Commit(); err != nil {
 		return nil, errors.WrapInternal(op, err)
 	}
 
