@@ -157,6 +157,7 @@ func (h *WalletHandler) GetTransactionHistory(c *gin.Context) {
 		response = append(response, model.TransactionResponse{
 			ID:            tx.ID,
 			Amount:        tx.Amount,
+			Currency:      tx.Currency,
 			BalanceBefore: tx.BalanceBefore,
 			BalanceAfter:  tx.BalanceAfter,
 			Type:          tx.Type,
